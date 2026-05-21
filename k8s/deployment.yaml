@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fintech-secure-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fintech-secure-lab
+  template:
+    metadata:
+      labels:
+        app: fintech-secure-lab
+    spec:
+      containers:
+        - name: fintech-secure-lab
+          image: fintech-secure-lab:latest
+          ports:
+            - containerPort: 8000
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: true
