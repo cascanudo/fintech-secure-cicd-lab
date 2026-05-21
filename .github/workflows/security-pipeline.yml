@@ -39,37 +39,40 @@ jobs:
         continue-on-error: true
         run: |
           pip-audit -r app/requirements.txt -f json > reports/pip-audit.json || true
-          ls -lh reports/pip-audit.json
+          ls -lh reports/pip-audit.json || true
 
       - name: Run SAST with Semgrep
         continue-on-error: true
         run: |
           semgrep --config p/owasp-top-ten app/ --json > reports/semgrep-owasp.json || true
-          ls -lh reports/semgrep-owasp.json
+          ls -lh reports/semgrep-owasp.json || true
 
       - name: Run IaC scan with Checkov - Docker
         continue-on-error: true
         run: |
-          checkov -d docker --framework dockerfile -o json > reports/checkov-docker.json || true
-          ls -lh reports/checkov-docker.json
+          checkov -d docker --framework dockerfile -o json --output-file-path reports/checkov-docker.json || true
+          echo "Checkov Docker report files:"
+          find reports/checkov-docker.json -type f -maxdepth 2 || true
 
       - name: Run IaC scan with Checkov - Kubernetes
         continue-on-error: true
         run: |
-          checkov -d k8s --framework kubernetes -o json > reports/checkov-k8s.json || true
-          ls -lh reports/checkov-k8s.json
+          checkov -d k8s --framework kubernetes -o json --output-file-path reports/checkov-k8s.json || true
+          echo "Checkov Kubernetes report files:"
+          find reports/checkov-k8s.json -type f -maxdepth 2 || true
 
       - name: Run IaC scan with Checkov - Terraform
         continue-on-error: true
         run: |
-          checkov -d terraform --framework terraform -o json > reports/checkov-terraform.json || true
-          ls -lh reports/checkov-terraform.json
+          checkov -d terraform --framework terraform -o json --output-file-path reports/checkov-terraform.json || true
+          echo "Checkov Terraform report files:"
+          find reports/checkov-terraform.json -type f -maxdepth 2 || true
 
       - name: Run Secret Scanning with TruffleHog
         continue-on-error: true
         run: |
           docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo --json > reports/trufflehog.json || true
-          ls -lh reports/trufflehog.json
+          ls -lh reports/trufflehog.json || true
 
       - name: Build Docker image
         run: |
@@ -88,7 +91,7 @@ jobs:
             -t http://localhost:8000 \
             -J zap-report.json \
             -r zap-report.html || true
-          ls -lh reports/
+          ls -lh reports/ || true
 
       - name: Upload reports as GitHub artifact
         uses: actions/upload-artifact@v4
@@ -104,7 +107,7 @@ jobs:
       - name: Import Checkov Docker report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-docker.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-docker.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -113,12 +116,12 @@ jobs:
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/checkov-docker.json"
+            -F "file=@reports/checkov-docker.json/results_json.json"
 
       - name: Import Checkov Kubernetes report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-k8s.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-k8s.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -127,12 +130,12 @@ jobs:
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/checkov-k8s.json"
+            -F "file=@reports/checkov-k8s.json/results_json.json"
 
       - name: Import Checkov Terraform report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-terraform.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-terraform.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -141,7 +144,7 @@ jobs:
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/checkov-terraform.json"
+            -F "file=@reports/checkov-terraform.json/results_json.json"
 
       - name: Import Semgrep report to DefectDojo
         continue-on-error: true
