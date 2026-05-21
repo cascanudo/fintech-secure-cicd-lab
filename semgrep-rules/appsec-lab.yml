@@ -1,0 +1,34 @@
+rules:
+  - id: python-subprocess-shell-true-lab
+    message: "Uso inseguro de subprocess con shell=True. Riesgo de command injection."
+    severity: ERROR
+    languages:
+      - python
+    pattern: subprocess.check_output(..., shell=True, ...)
+
+  - id: python-hardcoded-password-lab
+    message: "Contraseña o secreto hardcodeado detectado en código fuente."
+    severity: WARNING
+    languages:
+      - python
+    pattern-regex: "(DATABASE_PASSWORD|APP_DEBUG_TOKEN)\\s*=\\s*['\\\"][^'\\\"]+['\\\"]"
+
+  - id: fastapi-debug-endpoint-lab
+    message: "Endpoint debug expuesto. Puede filtrar información sensible."
+    severity: WARNING
+    languages:
+      - python
+    pattern: |
+      @app.get("/debug/$PATH")
+      def $FUNC(...):
+          ...
+
+  - id: fastapi-broken-access-control-lab
+    message: "Endpoint sensible expuesto sin autenticación/autorización."
+    severity: WARNING
+    languages:
+      - python
+    pattern: |
+      @app.get("/balance/{username}")
+      def $FUNC(...):
+          ...

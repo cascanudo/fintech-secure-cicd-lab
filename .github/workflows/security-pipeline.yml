@@ -22,7 +22,17 @@ jobs:
           fetch-depth: 0
 
       - name: Create reports folder
-        run: mkdir -p reports
+        run: mkdir -p reports runtime-secrets
+
+      - name: Generate runtime secrets for secret scanning lab
+        run: |
+          {
+            printf "AWS_ACCESS_KEY_ID=%s%s\n" "AKIA" "IOSFODNN7EXAMPLE"
+            printf "AWS_SECRET_ACCESS_KEY=%s%s\n" "wJalrXUtnFEMI/K7MDENG/" "bPxRfiCYEXAMPLEKEY"
+            printf "GITHUB_TOKEN=%s%s\n" "ghp_" "1234567890abcdefghijklmnopqrstuvwxyzABCD"
+            printf "SLACK_BOT_TOKEN=%s%s-%s-%s\n" "xoxb-" "123456789012" "123456789012" "abcdefghijklmnopqrstuvwx"
+            printf "DATABASE_PASSWORD=%s\n" "SuperSecretPassword123"
+          } > runtime-secrets/dev-secrets.txt
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,40 +49,46 @@ jobs:
         continue-on-error: true
         run: |
           pip-audit -r app/requirements.txt -f json > reports/pip-audit.json || true
+          echo "pip-audit report:"
           ls -lh reports/pip-audit.json || true
+          head -c 800 reports/pip-audit.json || true
 
       - name: Run SAST with Semgrep
         continue-on-error: true
         run: |
-          semgrep --config p/owasp-top-ten app/ --json > reports/semgrep-owasp.json || true
+          semgrep --config semgrep-rules/appsec-lab.yml --config p/security-audit --config p/owasp-top-ten app/ --json > reports/semgrep-owasp.json || true
+          echo "Semgrep report:"
           ls -lh reports/semgrep-owasp.json || true
+          grep -o '"check_id"' reports/semgrep-owasp.json | wc -l || true
 
       - name: Run IaC scan with Checkov - Docker
         continue-on-error: true
         run: |
           checkov -d docker --framework dockerfile -o json --output-file-path reports/checkov-docker.json || true
           echo "Checkov Docker report files:"
-          find reports/checkov-docker.json -type f -maxdepth 2 || true
+          find reports/checkov-docker.json -maxdepth 2 -type f || true
 
       - name: Run IaC scan with Checkov - Kubernetes
         continue-on-error: true
         run: |
           checkov -d k8s --framework kubernetes -o json --output-file-path reports/checkov-k8s.json || true
           echo "Checkov Kubernetes report files:"
-          find reports/checkov-k8s.json -type f -maxdepth 2 || true
+          find reports/checkov-k8s.json -maxdepth 2 -type f || true
 
       - name: Run IaC scan with Checkov - Terraform
         continue-on-error: true
         run: |
           checkov -d terraform --framework terraform -o json --output-file-path reports/checkov-terraform.json || true
           echo "Checkov Terraform report files:"
-          find reports/checkov-terraform.json -type f -maxdepth 2 || true
+          find reports/checkov-terraform.json -maxdepth 2 -type f || true
 
       - name: Run Secret Scanning with TruffleHog
         continue-on-error: true
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo --json > reports/trufflehog.json || true
+          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo/runtime-secrets --json --no-verification > reports/trufflehog.json || true
+          echo "TruffleHog report:"
           ls -lh reports/trufflehog.json || true
+          head -n 10 reports/trufflehog.json || true
 
       - name: Build Docker image
         run: |
@@ -81,16 +97,21 @@ jobs:
       - name: Run application for DAST
         run: |
           docker run -d --name fintech-app -p 8000:8000 fintech-secure-cicd-lab:ci
-          sleep 15
+          sleep 20
           curl -f http://localhost:8000/
+          curl -f http://localhost:8000/docs || true
+          curl -f "http://localhost:8000/vulnerable/search?q=<script>alert(1)</script>" || true
+          curl -f "http://localhost:8000/debug/config" || true
 
       - name: Run DAST with OWASP ZAP Baseline
         continue-on-error: true
         run: |
-          docker run --network host -v $(pwd)/reports:/zap/wrk/:rw ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+          docker run --network host -v "$(pwd)/reports:/zap/wrk/:rw" ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
             -t http://localhost:8000 \
             -J zap-report.json \
+            -x zap-report.xml \
             -r zap-report.html || true
+          echo "ZAP reports:"
           ls -lh reports/ || true
 
       - name: Upload reports as GitHub artifact
@@ -174,10 +195,24 @@ jobs:
             -F "close_old_findings=false" \
             -F "file=@reports/pip-audit.json"
 
+      - name: Import TruffleHog report to DefectDojo
+        continue-on-error: true
+        run: |
+          test -s reports/trufflehog.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=Trufflehog Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/trufflehog.json"
+
       - name: Import OWASP ZAP report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/zap-report.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/zap-report.xml && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=ZAP Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -186,4 +221,4 @@ jobs:
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/zap-report.json"
+            -F "file=@reports/zap-report.xml"

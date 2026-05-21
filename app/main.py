@@ -1,9 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from datetime import datetime
+import os
+import subprocess
 
 app = FastAPI(title="Fintech Secure CI/CD Lab")
 
+# Vulnerabilidad intencional: credenciales hardcodeadas para laboratorio AppSec.
 users = {
     "juan": {
         "password": "admin123",
@@ -16,6 +19,10 @@ users = {
 }
 
 transactions = []
+
+# Secretos simulados no reales para laboratorio.
+DATABASE_PASSWORD = "LabPasswordForTraining123"
+APP_DEBUG_TOKEN = "LabDebugTokenForTraining123"
 
 
 class LoginRequest(BaseModel):
@@ -33,7 +40,8 @@ class TransferRequest(BaseModel):
 def home():
     return {
         "message": "Fintech Secure CI/CD Lab",
-        "status": "running"
+        "status": "running",
+        "security_note": "Intentional vulnerable lab for AppSec/DevSecOps training"
     }
 
 
@@ -52,6 +60,7 @@ def login(data: LoginRequest):
 
 @app.get("/balance/{username}")
 def get_balance(username: str):
+    # Vulnerabilidad intencional: Broken Access Control.
     user = users.get(username)
 
     if not user:
@@ -65,6 +74,7 @@ def get_balance(username: str):
 
 @app.post("/api/transfer")
 def transfer(data: TransferRequest):
+    # Vulnerabilidad intencional: el backend confía en from_user enviado por el cliente.
     user = users.get(data.from_user)
 
     if not user:
@@ -95,4 +105,49 @@ def transfer(data: TransferRequest):
 
 @app.get("/transactions")
 def list_transactions():
+    # Vulnerabilidad intencional: exposición de transacciones sin autenticación.
     return transactions
+
+
+@app.get("/debug/config")
+def debug_config():
+    # Vulnerabilidad intencional: endpoint debug expone datos sensibles.
+    return {
+        "debug": True,
+        "database_password": DATABASE_PASSWORD,
+        "debug_token": APP_DEBUG_TOKEN
+    }
+
+
+@app.get("/debug/env")
+def debug_env():
+    # Vulnerabilidad intencional: exposición de variables de entorno.
+    return dict(os.environ)
+
+
+@app.get("/debug/ping")
+def debug_ping(host: str = Query(...)):
+    # Vulnerabilidad intencional: command injection por shell=True.
+    command = f"ping -c 1 {host}"
+    output = subprocess.check_output(command, shell=True, text=True)
+    return {
+        "command": command,
+        "output": output
+    }
+
+
+@app.get("/vulnerable/search")
+def vulnerable_search(q: str = Query("")):
+    # Vulnerabilidad intencional: refleja entrada del usuario.
+    html = f"""
+    <html>
+        <head>
+            <title>Search</title>
+        </head>
+        <body>
+            <h1>Search result</h1>
+            <p>You searched for: {q}</p>
+        </body>
+    </html>
+    """
+    return {"html": html}

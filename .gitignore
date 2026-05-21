@@ -8,10 +8,10 @@ venv/
 .env
 .env.*
 
-# Reports
-reports/
-
 # OS / Editor
 .DS_Store
 .vscode/
 .idea/
+
+# Reports locales
+reports/

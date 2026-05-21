@@ -3,3 +3,4 @@ uvicorn
 pydantic
 python-multipart
 pytest
+requests==2.19.1
