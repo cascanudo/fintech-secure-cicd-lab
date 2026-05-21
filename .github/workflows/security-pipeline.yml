@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create reports folder
         run: mkdir -p reports
@@ -36,36 +38,38 @@ jobs:
       - name: Run SCA with pip-audit
         continue-on-error: true
         run: |
-          pip-audit -r app/requirements.txt -f json -o reports/pip-audit.json || true
+          pip-audit -r app/requirements.txt -f json > reports/pip-audit.json || true
+          ls -lh reports/pip-audit.json
 
       - name: Run SAST with Semgrep
         continue-on-error: true
         run: |
-          semgrep --config p/owasp-top-ten app/ --json --output reports/semgrep-owasp.json || true
+          semgrep --config p/owasp-top-ten app/ --json > reports/semgrep-owasp.json || true
+          ls -lh reports/semgrep-owasp.json
 
       - name: Run IaC scan with Checkov - Docker
         continue-on-error: true
         run: |
-          checkov -d docker --framework dockerfile -o json --output-file-path reports/checkov-docker.json || true
+          checkov -d docker --framework dockerfile -o json > reports/checkov-docker.json || true
+          ls -lh reports/checkov-docker.json
 
       - name: Run IaC scan with Checkov - Kubernetes
         continue-on-error: true
         run: |
-          checkov -d k8s --framework kubernetes -o json --output-file-path reports/checkov-k8s.json || true
+          checkov -d k8s --framework kubernetes -o json > reports/checkov-k8s.json || true
+          ls -lh reports/checkov-k8s.json
 
       - name: Run IaC scan with Checkov - Terraform
         continue-on-error: true
         run: |
-          checkov -d terraform --framework terraform -o json --output-file-path reports/checkov-terraform.json || true
+          checkov -d terraform --framework terraform -o json > reports/checkov-terraform.json || true
+          ls -lh reports/checkov-terraform.json
 
       - name: Run Secret Scanning with TruffleHog
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: main
-          head: HEAD
-          extra_args: --json --no-update
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo --json > reports/trufflehog.json || true
+          ls -lh reports/trufflehog.json
 
       - name: Build Docker image
         run: |
@@ -84,6 +88,7 @@ jobs:
             -t http://localhost:8000 \
             -J zap-report.json \
             -r zap-report.html || true
+          ls -lh reports/
 
       - name: Upload reports as GitHub artifact
         uses: actions/upload-artifact@v4
@@ -91,10 +96,15 @@ jobs:
           name: security-reports
           path: reports/
 
+      - name: Test DefectDojo API connectivity
+        continue-on-error: true
+        run: |
+          curl -I "${{ secrets.DEFECTDOJO_URL }}" || true
+
       - name: Import Checkov Docker report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-docker.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -108,7 +118,7 @@ jobs:
       - name: Import Checkov Kubernetes report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-k8s.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -122,7 +132,7 @@ jobs:
       - name: Import Checkov Terraform report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-terraform.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -136,7 +146,7 @@ jobs:
       - name: Import Semgrep report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/semgrep-owasp.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Semgrep JSON Report" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -150,7 +160,7 @@ jobs:
       - name: Import pip-audit report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/pip-audit.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=pip-audit Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -164,7 +174,7 @@ jobs:
       - name: Import OWASP ZAP report to DefectDojo
         continue-on-error: true
         run: |
-          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/zap-report.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=ZAP Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
