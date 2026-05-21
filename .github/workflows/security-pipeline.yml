@@ -26,13 +26,20 @@ jobs:
 
       - name: Generate runtime secrets for secret scanning lab
         run: |
-          {
-            printf "AWS_ACCESS_KEY_ID=%s%s\n" "AKIA" "IOSFODNN7EXAMPLE"
-            printf "AWS_SECRET_ACCESS_KEY=%s%s\n" "wJalrXUtnFEMI/K7MDENG/" "bPxRfiCYEXAMPLEKEY"
-            printf "GITHUB_TOKEN=%s%s\n" "ghp_" "1234567890abcdefghijklmnopqrstuvwxyzABCD"
-            printf "SLACK_BOT_TOKEN=%s%s-%s-%s\n" "xoxb-" "123456789012" "123456789012" "abcdefghijklmnopqrstuvwx"
-            printf "DATABASE_PASSWORD=%s\n" "SuperSecretPassword123"
-          } > runtime-secrets/dev-secrets.txt
+          P1="AKIA"
+          P2="IOSFODNN7EXAMPLE"
+          S1="wJalrXUtnFEMI/K7MDENG/"
+          S2="bPxRfiCYEXAMPLEKEY"
+          G1="ghp_"
+          G2="1234567890abcdefghijklmnopqrstuvwxyzABCD"
+          SL1="xox"
+          SL2="b-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+
+          echo "AWS_ACCESS_KEY_ID=${P1}${P2}" > runtime-secrets/dev-secrets.txt
+          echo "AWS_SECRET_ACCESS_KEY=${S1}${S2}" >> runtime-secrets/dev-secrets.txt
+          echo "GITHUB_TOKEN=${G1}${G2}" >> runtime-secrets/dev-secrets.txt
+          echo "SLACK_BOT_TOKEN=${SL1}${SL2}" >> runtime-secrets/dev-secrets.txt
+          echo "DATABASE_PASSWORD=SuperSecretPassword123" >> runtime-secrets/dev-secrets.txt
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,10 +55,10 @@ jobs:
       - name: Run SCA with pip-audit
         continue-on-error: true
         run: |
-          pip-audit -r app/requirements.txt -f json > reports/pip-audit.json || true
+          pip-audit -r app/vulnerable-requirements.txt -f json > reports/pip-audit.json || true
           echo "pip-audit report:"
           ls -lh reports/pip-audit.json || true
-          head -c 800 reports/pip-audit.json || true
+          head -c 1000 reports/pip-audit.json || true
 
       - name: Run SAST with Semgrep
         continue-on-error: true
@@ -65,21 +72,18 @@ jobs:
         continue-on-error: true
         run: |
           checkov -d docker --framework dockerfile -o json --output-file-path reports/checkov-docker.json || true
-          echo "Checkov Docker report files:"
           find reports/checkov-docker.json -maxdepth 2 -type f || true
 
       - name: Run IaC scan with Checkov - Kubernetes
         continue-on-error: true
         run: |
           checkov -d k8s --framework kubernetes -o json --output-file-path reports/checkov-k8s.json || true
-          echo "Checkov Kubernetes report files:"
           find reports/checkov-k8s.json -maxdepth 2 -type f || true
 
       - name: Run IaC scan with Checkov - Terraform
         continue-on-error: true
         run: |
           checkov -d terraform --framework terraform -o json --output-file-path reports/checkov-terraform.json || true
-          echo "Checkov Terraform report files:"
           find reports/checkov-terraform.json -maxdepth 2 -type f || true
 
       - name: Run Secret Scanning with TruffleHog
