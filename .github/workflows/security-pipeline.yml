@@ -1,0 +1,176 @@
+name: AppSec DevSecOps Security Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create reports folder
+        run: mkdir -p reports
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pip install pip-audit checkov semgrep
+
+      - name: Run SCA with pip-audit
+        continue-on-error: true
+        run: |
+          pip-audit -r app/requirements.txt -f json -o reports/pip-audit.json || true
+
+      - name: Run SAST with Semgrep
+        continue-on-error: true
+        run: |
+          semgrep --config p/owasp-top-ten app/ --json --output reports/semgrep-owasp.json || true
+
+      - name: Run IaC scan with Checkov - Docker
+        continue-on-error: true
+        run: |
+          checkov -d docker --framework dockerfile -o json --output-file-path reports/checkov-docker.json || true
+
+      - name: Run IaC scan with Checkov - Kubernetes
+        continue-on-error: true
+        run: |
+          checkov -d k8s --framework kubernetes -o json --output-file-path reports/checkov-k8s.json || true
+
+      - name: Run IaC scan with Checkov - Terraform
+        continue-on-error: true
+        run: |
+          checkov -d terraform --framework terraform -o json --output-file-path reports/checkov-terraform.json || true
+
+      - name: Run Secret Scanning with TruffleHog
+        continue-on-error: true
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --json --no-update
+
+      - name: Build Docker image
+        run: |
+          docker build -t fintech-secure-cicd-lab:ci -f docker/Dockerfile .
+
+      - name: Run application for DAST
+        run: |
+          docker run -d --name fintech-app -p 8000:8000 fintech-secure-cicd-lab:ci
+          sleep 15
+          curl -f http://localhost:8000/
+
+      - name: Run DAST with OWASP ZAP Baseline
+        continue-on-error: true
+        run: |
+          docker run --network host -v $(pwd)/reports:/zap/wrk/:rw ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t http://localhost:8000 \
+            -J zap-report.json \
+            -r zap-report.html || true
+
+      - name: Upload reports as GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: reports/
+
+      - name: Import Checkov Docker report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=Checkov Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/checkov-docker.json"
+
+      - name: Import Checkov Kubernetes report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=Checkov Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/checkov-k8s.json"
+
+      - name: Import Checkov Terraform report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=Checkov Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/checkov-terraform.json"
+
+      - name: Import Semgrep report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=Semgrep JSON Report" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/semgrep-owasp.json"
+
+      - name: Import pip-audit report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=pip-audit Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/pip-audit.json"
+
+      - name: Import OWASP ZAP report to DefectDojo
+        continue-on-error: true
+        run: |
+          curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
+            -F "scan_type=ZAP Scan" \
+            -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "minimum_severity=Info" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=false" \
+            -F "file=@reports/zap-report.json"
