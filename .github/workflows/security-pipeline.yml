@@ -24,7 +24,7 @@ jobs:
       - name: Create reports folder
         run: mkdir -p reports runtime-secrets
 
-      - name: Generate runtime secrets for secret scanning lab
+      - name: Generate runtime secrets for TruffleHog lab
         run: |
           P1="AKIA"
           P2="IOSFODNN7EXAMPLE"
@@ -89,10 +89,94 @@ jobs:
       - name: Run Secret Scanning with TruffleHog
         continue-on-error: true
         run: |
-          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo/runtime-secrets --json --no-verification > reports/trufflehog.json || true
-          echo "TruffleHog report:"
-          ls -lh reports/trufflehog.json || true
-          head -n 10 reports/trufflehog.json || true
+          docker run --rm -v "$PWD:/repo" ghcr.io/trufflesecurity/trufflehog:latest filesystem /repo/runtime-secrets --json --no-verification > reports/trufflehog-raw.json || true
+          echo "TruffleHog raw report:"
+          ls -lh reports/trufflehog-raw.json || true
+          head -n 10 reports/trufflehog-raw.json || true
+
+      - name: Convert TruffleHog results to DefectDojo Generic Findings
+        run: |
+          python3 - << 'PY'
+          import json
+          from pathlib import Path
+          from datetime import date
+
+          raw_path = Path("reports/trufflehog-raw.json")
+          out_path = Path("reports/trufflehog-generic.json")
+
+          findings = []
+
+          if raw_path.exists() and raw_path.stat().st_size > 0:
+              for line in raw_path.read_text(errors="ignore").splitlines():
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      item = json.loads(line)
+                  except Exception:
+                      continue
+
+                  detector = item.get("DetectorName") or item.get("detector_name") or "Secret"
+                  source = item.get("SourceName") or item.get("source_name") or "Filesystem"
+                  raw_value = item.get("Raw") or item.get("raw") or ""
+                  verified = bool(item.get("Verified") or item.get("verified") or False)
+
+                  source_meta = item.get("SourceMetadata") or {}
+                  data = source_meta.get("Data") or {}
+                  filesystem = data.get("Filesystem") or {}
+                  file_path = filesystem.get("file") or filesystem.get("File") or "runtime-secrets/dev-secrets.txt"
+                  line_no = filesystem.get("line") or filesystem.get("Line") or 1
+
+                  title = f"Secret detected by TruffleHog: {detector}"
+                  description = (
+                      f"TruffleHog detected a potential secret.\n\n"
+                      f"Detector: {detector}\n"
+                      f"Source: {source}\n"
+                      f"Verified: {verified}\n"
+                      f"Location: {file_path}:{line_no}\n\n"
+                      f"This is an intentional lab finding generated at runtime for secret scanning validation."
+                  )
+
+                  findings.append({
+                      "title": title,
+                      "severity": "High",
+                      "description": description,
+                      "mitigation": "Remove secrets from source code and runtime artifacts. Rotate exposed credentials and store secrets in a secure secret manager.",
+                      "impact": "Exposed secrets can allow unauthorized access to cloud, source code, messaging platforms, databases or other systems.",
+                      "date": str(date.today()),
+                      "cwe": 798,
+                      "file_path": str(file_path),
+                      "line": int(line_no) if str(line_no).isdigit() else 1,
+                      "active": True,
+                      "verified": False,
+                      "static_finding": True,
+                      "dynamic_finding": False,
+                      "tags": ["trufflehog", "secret-scanning", "devsecops", "lab"]
+                  })
+
+          if not findings:
+              findings.append({
+                  "title": "TruffleHog executed but no secrets were parsed",
+                  "severity": "Info",
+                  "description": "TruffleHog ran in the pipeline, but no parseable secret findings were generated.",
+                  "mitigation": "Validate TruffleHog output format and detector configuration.",
+                  "date": str(date.today()),
+                  "cwe": 798,
+                  "active": True,
+                  "verified": False,
+                  "static_finding": True,
+                  "dynamic_finding": False,
+                  "tags": ["trufflehog", "secret-scanning", "devsecops", "lab"]
+              })
+
+          out_path.write_text(json.dumps({
+              "name": "TruffleHog Secret Scanning",
+              "findings": findings
+          }, indent=2))
+          print(f"Generated {len(findings)} generic TruffleHog findings")
+          PY
+
+          cat reports/trufflehog-generic.json
 
       - name: Build Docker image
         run: |
@@ -104,19 +188,133 @@ jobs:
           sleep 20
           curl -f http://localhost:8000/
           curl -f http://localhost:8000/docs || true
+          curl -f http://localhost:8000/openapi.json || true
           curl -f "http://localhost:8000/vulnerable/search?q=<script>alert(1)</script>" || true
           curl -f "http://localhost:8000/debug/config" || true
 
-      - name: Run DAST with OWASP ZAP Baseline
+      - name: Run DAST with OWASP ZAP API Scan
         continue-on-error: true
         run: |
-          docker run --network host -v "$(pwd)/reports:/zap/wrk/:rw" ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-            -t http://localhost:8000 \
-            -J zap-report.json \
-            -x zap-report.xml \
-            -r zap-report.html || true
-          echo "ZAP reports:"
+          docker run --network host -v "$(pwd)/reports:/zap/wrk/:rw" ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
+            -t http://localhost:8000/openapi.json \
+            -f openapi \
+            -J zap-api-report.json \
+            -x zap-api-report.xml \
+            -r zap-api-report.html || true
+          echo "ZAP API reports:"
           ls -lh reports/ || true
+
+      - name: Convert ZAP results to DefectDojo Generic Findings
+        run: |
+          python3 - << 'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          from datetime import date
+
+          xml_path = Path("reports/zap-api-report.xml")
+          out_path = Path("reports/zap-generic.json")
+
+          findings = []
+
+          sev_map = {
+              "3": "High",
+              "2": "Medium",
+              "1": "Low",
+              "0": "Info"
+          }
+
+          if xml_path.exists() and xml_path.stat().st_size > 0:
+              try:
+                  root = ET.parse(xml_path).getroot()
+                  for item in root.findall(".//alertitem"):
+                      name = item.findtext("alert") or "ZAP Alert"
+                      riskcode = item.findtext("riskcode") or "0"
+                      severity = sev_map.get(str(riskcode), "Info")
+                      desc = item.findtext("desc") or ""
+                      solution = item.findtext("solution") or "Review and remediate the DAST finding."
+                      reference = item.findtext("reference") or ""
+                      cwe_text = item.findtext("cweid") or "0"
+                      cwe = int(cwe_text) if cwe_text.isdigit() else 0
+
+                      instances = item.findall(".//instance")
+                      if instances:
+                          for inst in instances:
+                              uri = inst.findtext("uri") or "http://localhost:8000"
+                              method = inst.findtext("method") or ""
+                              param = inst.findtext("param") or ""
+                              evidence = inst.findtext("evidence") or ""
+
+                              findings.append({
+                                  "title": f"OWASP ZAP: {name}",
+                                  "severity": severity,
+                                  "description": f"{desc}\n\nMethod: {method}\nParam: {param}\nEvidence: {evidence}",
+                                  "mitigation": solution,
+                                  "impact": "DAST finding identified by OWASP ZAP while the FastAPI application was running.",
+                                  "references": reference,
+                                  "date": str(date.today()),
+                                  "cwe": cwe,
+                                  "active": True,
+                                  "verified": False,
+                                  "dynamic_finding": True,
+                                  "static_finding": False,
+                                  "endpoints": [uri],
+                                  "tags": ["owasp-zap", "dast", "api-scan", "devsecops", "lab"]
+                              })
+                      else:
+                          findings.append({
+                              "title": f"OWASP ZAP: {name}",
+                              "severity": severity,
+                              "description": desc,
+                              "mitigation": solution,
+                              "impact": "DAST finding identified by OWASP ZAP while the FastAPI application was running.",
+                              "references": reference,
+                              "date": str(date.today()),
+                              "cwe": cwe,
+                              "active": True,
+                              "verified": False,
+                              "dynamic_finding": True,
+                              "static_finding": False,
+                              "endpoints": ["http://localhost:8000"],
+                              "tags": ["owasp-zap", "dast", "api-scan", "devsecops", "lab"]
+                          })
+              except Exception as e:
+                  findings.append({
+                      "title": "OWASP ZAP report parsing failed",
+                      "severity": "Info",
+                      "description": f"ZAP ran, but XML parsing failed: {e}",
+                      "mitigation": "Validate ZAP XML output.",
+                      "date": str(date.today()),
+                      "active": True,
+                      "verified": False,
+                      "dynamic_finding": True,
+                      "static_finding": False,
+                      "tags": ["owasp-zap", "dast", "api-scan", "devsecops", "lab"]
+                  })
+
+          if not findings:
+              findings.append({
+                  "title": "OWASP ZAP API Scan executed",
+                  "severity": "Info",
+                  "description": "OWASP ZAP API Scan ran against the FastAPI OpenAPI specification. No parseable alerts were generated.",
+                  "mitigation": "Review ZAP HTML/XML artifacts and tune DAST rules or authentication if needed.",
+                  "date": str(date.today()),
+                  "active": True,
+                  "verified": False,
+                  "dynamic_finding": True,
+                  "static_finding": False,
+                  "endpoints": ["http://localhost:8000/openapi.json"],
+                  "tags": ["owasp-zap", "dast", "api-scan", "devsecops", "lab"]
+              })
+
+          out_path.write_text(json.dumps({
+              "name": "OWASP ZAP API Scan",
+              "findings": findings
+          }, indent=2))
+          print(f"Generated {len(findings)} generic ZAP findings")
+          PY
+
+          cat reports/zap-generic.json
 
       - name: Upload reports as GitHub artifact
         uses: actions/upload-artifact@v4
@@ -132,7 +330,7 @@ jobs:
       - name: Import Checkov Docker report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-docker.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-docker.json/results_json.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -146,7 +344,7 @@ jobs:
       - name: Import Checkov Kubernetes report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-k8s.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-k8s.json/results_json.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -160,7 +358,7 @@ jobs:
       - name: Import Checkov Terraform report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/checkov-terraform.json/results_json.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/checkov-terraform.json/results_json.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Checkov Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -174,7 +372,7 @@ jobs:
       - name: Import Semgrep report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/semgrep-owasp.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/semgrep-owasp.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=Semgrep JSON Report" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -188,7 +386,7 @@ jobs:
       - name: Import pip-audit report to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/pip-audit.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/pip-audit.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
             -F "scan_type=pip-audit Scan" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
@@ -199,30 +397,30 @@ jobs:
             -F "close_old_findings=false" \
             -F "file=@reports/pip-audit.json"
 
-      - name: Import TruffleHog report to DefectDojo
+      - name: Import TruffleHog generic findings to DefectDojo
         continue-on-error: true
         run: |
-          test -s reports/trufflehog.json && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/trufflehog-generic.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
-            -F "scan_type=Trufflehog Scan" \
+            -F "scan_type=Generic Findings Import" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
             -F "minimum_severity=Info" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/trufflehog.json"
+            -F "file=@reports/trufflehog-generic.json"
 
-      - name: Import OWASP ZAP report to DefectDojo
+      - name: Import OWASP ZAP generic findings to DefectDojo
         continue-on-error: true
         run: |
-          test -f reports/zap-report.xml && curl -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+          test -f reports/zap-generic.json && curl --fail-with-body -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
             -H "Authorization: Token ${{ secrets.DEFECTDOJO_API_KEY }}" \
-            -F "scan_type=ZAP Scan" \
+            -F "scan_type=Generic Findings Import" \
             -F "product=${{ secrets.DEFECTDOJO_PRODUCT_ID }}" \
             -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
             -F "minimum_severity=Info" \
             -F "active=true" \
             -F "verified=false" \
             -F "close_old_findings=false" \
-            -F "file=@reports/zap-report.xml"
+            -F "file=@reports/zap-generic.json"
